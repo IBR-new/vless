@@ -1,6 +1,6 @@
 {
   "name": "vless",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Поднимает VLESS + Reality на вашем сервере и кладёт готовый профиль Clash на рабочий стол",
   "bin": { "vless": "index.js" },
   "files": ["index.js", "setup.sh", "README.md"],

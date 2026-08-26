@@ -35,6 +35,20 @@ function ask(q, def, preset) {
 }
 function closeRl() { if (rl) { rl.close(); rl = null; } }
 
+// Повторяет вопрос, пока не получит осмысленный ответ.
+// Пустая строка — не повод завершаться: её мог оставить случайный Enter,
+// нажатый пока npx скачивал пакет.
+async function askRequired(q, def, preset, validate) {
+  for (;;) {
+    const v = (await ask(q, def, preset)).trim();
+    preset = null;
+    if (!v) { console.log('  ' + C.warn('Ничего не введено — повторите.')); continue; }
+    const err = validate ? validate(v) : null;
+    if (err) { console.log('  ' + C.warn(err)); continue; }
+    return v;
+  }
+}
+
 function fail(msg, hint) {
   console.log('\n  ' + C.err('✗ ' + msg));
   if (hint) hint.split('\n').forEach(l => console.log('    ' + C.dim(l)));
@@ -173,70 +187,91 @@ rules:
 async function main() {
   console.log('');
   console.log('  ' + C.b('VLESS + Reality') + C.dim(' — установка прокси на ваш сервер'));
-  console.log('  ' + C.dim('Данные возьмите из письма хостера.'));
+  console.log('  ' + C.dim('Данные возьмите из письма хостера. Выйти — Ctrl+C.'));
   console.log('');
 
-  const host = await ask('IP сервера', null, flag('host') || process.env.VLESS_HOST);
-  if (!host) fail('Адрес не введён.');
-  const user = await ask('Логин', 'root', flag('user') || process.env.VLESS_USER);
-  const pass = await ask('Пароль', null, flag('pass') || process.env.VLESS_PASS);
-  if (!pass) fail('Пароль не введён.');
-  console.log('');
+  const validHost = v => (looksLikeIp(v) || /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(v))
+    ? null : `«${v}» не похоже на адрес. Нужен IP вида 203.0.113.10`;
 
-  if (!looksLikeIp(host) && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(host)) {
-    fail(`«${host}» не похоже на адрес сервера.`,
-      'Нужен IP-адрес из письма хостера, например 203.0.113.10');
+  // Адрес спрашиваем, пока не получим тот, до которого реально есть маршрут.
+  let host;
+  for (;;) {
+    host = await askRequired('IP сервера', null, flag('host') || process.env.VLESS_HOST, validHost);
+    process.stdout.write('  ' + C.dim('проверяю доступность адреса… '));
+    const r = await probe(host, 22, 10000);
+    if (r === 'ok') { console.log(C.ok('доступен')); break; }
+    console.log('');
+    if (r === 'dns') {
+      console.log('  ' + C.warn(`Адрес ${host} не найден — похоже на опечатку.`));
+    } else if (r === 'refused') {
+      console.log('  ' + C.warn(`Сервер ${host} отклонил подключение по SSH.`));
+      console.log('    ' + C.dim('Адрес доступен, но порт 22 закрыт. Проверьте, запущен ли сервер.'));
+    } else {
+      console.log('  ' + C.warn(`Адрес ${host} недоступен с вашего интернета.`));
+      console.log('    ' + C.dim('Сервер может быть исправен, но маршрута до него нет.'));
+      console.log('    ' + C.dim('Чаще всего это блокировка IP у провайдера — попросите хостера заменить адрес.'));
+    }
+    if (flag('host') || process.env.VLESS_HOST) fail('Адрес недоступен.');
+    console.log('  ' + C.dim('Введите другой адрес или нажмите Ctrl+C.'));
+    console.log('');
   }
 
-  process.stdout.write('  ' + C.dim('проверяю доступность адреса… '));
-  const r = await probe(host, 22, 10000);
-  if (r !== 'ok') console.log('');
-  if (r === 'dns') {
-    fail(`Адрес ${host} не найден.`, 'Похоже на опечатку — сверьтесь с письмом хостера.');
-  }
-  if (r === 'refused') {
-    fail(`Сервер ${host} отклонил подключение по SSH.`,
-      'Адрес доступен, но порт 22 закрыт.\n' +
-      'Проверьте, что сервер запущен, и firewall у хостера разрешает SSH.');
-  }
-  if (r === 'timeout') {
-    fail(`Адрес ${host} недоступен с вашего интернета.`,
-      'Сервер может быть исправен — но маршрута до него нет.\n' +
-      'Чаще всего это блокировка IP у вашего провайдера.\n' +
-      'Попросите хостера заменить IP-адрес и запустите снова.');
-  }
-  console.log(C.ok('доступен'));
-
-  const conn = new Client();
   const script = fs.readFileSync(path.join(__dirname, 'setup.sh'), 'utf8');
-  let raw = '';
+  let user = null, pass = null;
 
-  conn.on('ready', () => {
-    console.log('  ' + C.ok('✓') + ' подключился к серверу\n');
-    conn.exec('bash -s', (err, stream) => {
-      if (err) fail('Не удалось запустить установку: ' + err.message);
-      stream.on('data', d => {
-        raw += d.toString();
-        d.toString().split('\n').filter(Boolean).forEach(line => {
-          if (/^\[\d\d:\d\d:\d\d\]/.test(line)) console.log('  ' + C.dim(line.replace(/^\[.*?\]\s*/, '→ ')));
-          else if (/ПРОКСИ РАБОТАЕТ/.test(line)) console.log('  ' + C.ok('✓ проверка связи пройдена'));
+  // Логин и пароль спрашиваем, пока сервер их не примет.
+  for (let attempt = 1; ; attempt++) {
+    user = await askRequired('Логин', 'root', attempt === 1 ? (flag('user') || process.env.VLESS_USER) : null);
+    pass = await askRequired('Пароль', null, attempt === 1 ? (flag('pass') || process.env.VLESS_PASS) : null);
+    console.log('');
+
+    let res;
+    try {
+      res = await runSetup(host, user, pass, script);
+    } catch (e) {
+      if (e.kind === 'auth') {
+        console.log('  ' + C.warn('Сервер отклонил логин или пароль.'));
+        console.log('    ' + C.dim('Сверьтесь с письмом хостера: пароль вводится без пробелов по краям.'));
+        if (flag('pass') || process.env.VLESS_PASS) fail('Неверные учётные данные.');
+        console.log('  ' + C.dim('Попробуйте ещё раз или нажмите Ctrl+C.'));
+        console.log('');
+        continue;
+      }
+      fail('Не удалось подключиться: ' + e.message);
+    }
+    finish(res.code, res.raw, host);
+    return;
+  }
+}
+
+// Одно SSH-подключение: ставит и запускает серверную часть.
+function runSetup(host, user, pass, script) {
+  return new Promise((resolve, reject) => {
+    const conn = new Client();
+    let raw = '', settled = false;
+    const done = fn => { if (!settled) { settled = true; fn(); } };
+
+    conn.on('ready', () => {
+      console.log('  ' + C.ok('✓') + ' подключился к серверу\n');
+      conn.exec('bash -s', (err, stream) => {
+        if (err) return done(() => reject(Object.assign(new Error(err.message), { kind: 'exec' })));
+        stream.on('data', d => {
+          raw += d.toString();
+          d.toString().split('\n').filter(Boolean).forEach(line => {
+            if (/^\[\d\d:\d\d:\d\d\]/.test(line)) console.log('  ' + C.dim(line.replace(/^\[.*?\]\s*/, '→ ')));
+            else if (/ПРОКСИ РАБОТАЕТ/.test(line)) console.log('  ' + C.ok('✓ проверка связи пройдена'));
+          });
         });
+        stream.stderr.on('data', d => { raw += d.toString(); });
+        stream.on('close', code => { conn.end(); done(() => resolve({ code, raw })); });
+        stream.end(script);
       });
-      stream.stderr.on('data', d => { raw += d.toString(); });
-      stream.on('close', code => {
-        conn.end();
-        finish(code, raw, host);
-      });
-      stream.end(script);
-    });
-  }).on('error', e => {
-    const lvl = e.level || '';
-    if (lvl === 'client-authentication')
-      fail('Сервер отклонил логин или пароль.', 'Проверьте данные из письма хостера — они вводятся без пробелов.');
-    if (lvl === 'client-timeout')
-      fail('Сервер не ответил вовремя.', 'Возможно, адрес недоступен с вашего интернета.');
-    fail('Не удалось подключиться: ' + e.message);
-  }).connect({ host, port: 22, username: user, password: pass, readyTimeout: 25000 });
+    }).on('error', e => {
+      const kind = e.level === 'client-authentication' ? 'auth'
+        : e.level === 'client-timeout' ? 'timeout' : 'other';
+      done(() => reject(Object.assign(new Error(e.message), { kind })));
+    }).connect({ host, port: 22, username: user, password: pass, readyTimeout: 25000 });
+  });
 }
 
 function finish(code, raw, host) {
@@ -262,5 +297,11 @@ function finish(code, raw, host) {
   console.log('');
   closeRl();
 }
+
+process.on('SIGINT', () => {
+  console.log('\n  ' + C.dim('Отменено. Ничего не изменено.') + '\n');
+  closeRl();
+  process.exit(130);
+});
 
 main().catch(e => fail('Непредвиденная ошибка: ' + e.message));
