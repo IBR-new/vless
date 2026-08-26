@@ -1,0 +1,266 @@
+#!/usr/bin/env node
+'use strict';
+
+const { Client } = require('ssh2');
+const readline = require('readline');
+const net = require('net');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execSync } = require('child_process');
+
+const C = {
+  dim: s => `\x1b[2m${s}\x1b[0m`,
+  b: s => `\x1b[1m${s}\x1b[0m`,
+  ok: s => `\x1b[32m${s}\x1b[0m`,
+  err: s => `\x1b[31m${s}\x1b[0m`,
+  warn: s => `\x1b[33m${s}\x1b[0m`,
+  acc: s => `\x1b[35m${s}\x1b[0m`
+};
+
+// значения можно передать флагами — тогда вопрос не задаётся
+const argv = process.argv.slice(2);
+function flag(name) {
+  const i = argv.indexOf('--' + name);
+  return i !== -1 && argv[i + 1] ? argv[i + 1] : null;
+}
+
+let rl = null;
+function ask(q, def, preset) {
+  if (preset) return Promise.resolve(preset);
+  if (!rl) rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise(res => {
+    rl.question(`  ${q}${def ? C.dim(` [${def}]`) : ''}: `, a => res((a || '').trim() || def || ''));
+  });
+}
+function closeRl() { if (rl) { rl.close(); rl = null; } }
+
+function fail(msg, hint) {
+  console.log('\n  ' + C.err('✗ ' + msg));
+  if (hint) hint.split('\n').forEach(l => console.log('    ' + C.dim(l)));
+  console.log('');
+  closeRl();
+  process.exit(1);
+}
+
+// --- рабочий стол: на Windows он может быть перенесён в OneDrive ---
+function desktopDir() {
+  const home = os.homedir();
+  if (process.platform === 'win32') {
+    try {
+      const out = execSync(
+        'reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders" /v Desktop',
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      const m = out.match(/Desktop\s+REG_(?:EXPAND_)?SZ\s+(.+)/);
+      if (m) {
+        const p = m[1].trim().replace(/%([^%]+)%/g, (_, v) => process.env[v] || '');
+        if (fs.existsSync(p)) return p;
+      }
+    } catch (e) { /* падать из-за реестра не будем */ }
+  }
+  const d = path.join(home, 'Desktop');
+  return fs.existsSync(d) ? d : home;
+}
+
+// --- быстрая проверка: доезжает ли адрес вообще ---
+// Различаем причины: опечатка и блокировка требуют разных советов.
+function probe(host, port, timeout) {
+  return new Promise(res => {
+    const s = new net.Socket();
+    const done = r => { s.destroy(); res(r); };
+    s.setTimeout(timeout);
+    s.once('connect', () => done('ok'));
+    s.once('timeout', () => done('timeout'));
+    s.once('error', e => {
+      const c = e.code || '';
+      if (c === 'ENOTFOUND' || c === 'EAI_AGAIN') return done('dns');
+      if (c === 'ECONNREFUSED') return done('refused');
+      done('timeout');
+    });
+    s.connect(port, host);
+  });
+}
+
+const looksLikeIp = h => /^\d{1,3}(\.\d{1,3}){3}$/.test(h) && h.split('.').every(o => +o <= 255);
+
+function buildYaml(v) {
+  return `# Профиль Clash — VLESS + Reality
+# Сервер: ${v.host}  ·  создан ${new Date().toISOString().slice(0, 10)}
+# Порт и режим задаёт сам Clash Verge, поэтому в профиле их нет.
+
+mode: rule
+log-level: info
+ipv6: false
+unified-delay: true
+tcp-concurrent: true
+
+profile:
+  store-selected: true
+  store-fake-ip: true
+
+dns:
+  enable: true
+  listen: 127.0.0.1:1053
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - '*.lan'
+    - '*.local'
+  default-nameserver: [1.1.1.1, 8.8.8.8]
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+  proxy-server-nameserver:
+    - https://1.1.1.1/dns-query
+
+proxies:
+  - name: VLESS-443
+    type: vless
+    server: ${v.host}
+    port: 443
+    uuid: ${v.uuid}
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: ${v.dest}
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: ${v.pub}
+      short-id: ${v.sid}
+
+  - name: VLESS-8443
+    type: vless
+    server: ${v.host}
+    port: 8443
+    uuid: ${v.uuid}
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: ${v.dest}
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: ${v.pub}
+      short-id: ${v.sid}
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [AUTO, VLESS-443, VLESS-8443, DIRECT]
+  - name: AUTO
+    type: url-test
+    proxies: [VLESS-443, VLESS-8443]
+    url: https://cp.cloudflare.com/generate_204
+    interval: 300
+    tolerance: 50
+
+rules:
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,100.64.0.0/10,DIRECT,no-resolve
+  - IP-CIDR,169.254.0.0/16,DIRECT,no-resolve
+  - DOMAIN-SUFFIX,lan,DIRECT
+  - DOMAIN-SUFFIX,local,DIRECT
+  - IP-CIDR,${v.host}/32,DIRECT,no-resolve
+  - MATCH,PROXY
+`;
+}
+
+async function main() {
+  console.log('');
+  console.log('  ' + C.b('VLESS + Reality') + C.dim(' — установка прокси на ваш сервер'));
+  console.log('  ' + C.dim('Данные возьмите из письма хостера.'));
+  console.log('');
+
+  const host = await ask('IP сервера', null, flag('host') || process.env.VLESS_HOST);
+  if (!host) fail('Адрес не введён.');
+  const user = await ask('Логин', 'root', flag('user') || process.env.VLESS_USER);
+  const pass = await ask('Пароль', null, flag('pass') || process.env.VLESS_PASS);
+  if (!pass) fail('Пароль не введён.');
+  console.log('');
+
+  if (!looksLikeIp(host) && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(host)) {
+    fail(`«${host}» не похоже на адрес сервера.`,
+      'Нужен IP-адрес из письма хостера, например 203.0.113.10');
+  }
+
+  process.stdout.write('  ' + C.dim('проверяю доступность адреса… '));
+  const r = await probe(host, 22, 10000);
+  if (r !== 'ok') console.log('');
+  if (r === 'dns') {
+    fail(`Адрес ${host} не найден.`, 'Похоже на опечатку — сверьтесь с письмом хостера.');
+  }
+  if (r === 'refused') {
+    fail(`Сервер ${host} отклонил подключение по SSH.`,
+      'Адрес доступен, но порт 22 закрыт.\n' +
+      'Проверьте, что сервер запущен, и firewall у хостера разрешает SSH.');
+  }
+  if (r === 'timeout') {
+    fail(`Адрес ${host} недоступен с вашего интернета.`,
+      'Сервер может быть исправен — но маршрута до него нет.\n' +
+      'Чаще всего это блокировка IP у вашего провайдера.\n' +
+      'Попросите хостера заменить IP-адрес и запустите снова.');
+  }
+  console.log(C.ok('доступен'));
+
+  const conn = new Client();
+  const script = fs.readFileSync(path.join(__dirname, 'setup.sh'), 'utf8');
+  let raw = '';
+
+  conn.on('ready', () => {
+    console.log('  ' + C.ok('✓') + ' подключился к серверу\n');
+    conn.exec('bash -s', (err, stream) => {
+      if (err) fail('Не удалось запустить установку: ' + err.message);
+      stream.on('data', d => {
+        raw += d.toString();
+        d.toString().split('\n').filter(Boolean).forEach(line => {
+          if (/^\[\d\d:\d\d:\d\d\]/.test(line)) console.log('  ' + C.dim(line.replace(/^\[.*?\]\s*/, '→ ')));
+          else if (/ПРОКСИ РАБОТАЕТ/.test(line)) console.log('  ' + C.ok('✓ проверка связи пройдена'));
+        });
+      });
+      stream.stderr.on('data', d => { raw += d.toString(); });
+      stream.on('close', code => {
+        conn.end();
+        finish(code, raw, host);
+      });
+      stream.end(script);
+    });
+  }).on('error', e => {
+    const lvl = e.level || '';
+    if (lvl === 'client-authentication')
+      fail('Сервер отклонил логин или пароль.', 'Проверьте данные из письма хостера — они вводятся без пробелов.');
+    if (lvl === 'client-timeout')
+      fail('Сервер не ответил вовремя.', 'Возможно, адрес недоступен с вашего интернета.');
+    fail('Не удалось подключиться: ' + e.message);
+  }).connect({ host, port: 22, username: user, password: pass, readyTimeout: 25000 });
+}
+
+function finish(code, raw, host) {
+  const get = k => { const m = raw.match(new RegExp('^' + k + '=(.+)$', 'm')); return m ? m[1].trim() : null; };
+  const v = { host, uuid: get('UUID'), pub: get('PUBLIC_KEY'), sid: get('SHORT_ID'), dest: get('DEST') };
+
+  if (code !== 0 || !v.uuid || !v.pub || !v.sid || !v.dest) {
+    fail('Установка не завершилась.',
+      'Сервер вернул код ' + code + '. Последние строки вывода:\n' +
+      raw.trim().split('\n').slice(-6).join('\n'));
+  }
+
+  const file = path.join(desktopDir(), 'vless.yaml');
+  fs.writeFileSync(file, buildYaml(v), 'utf8');
+
+  console.log('');
+  console.log('  ' + C.ok(C.b('Готово.')));
+  console.log('  ' + 'Профиль сохранён: ' + C.acc(file));
+  console.log('');
+  console.log('  ' + C.dim('Осталось два шага:'));
+  console.log('  ' + C.dim('  1. Перетащите этот файл в Clash Verge — вкладка «Профили».'));
+  console.log('  ' + C.dim('  2. Включите «Режим TUN», системный прокси при этом выключите.'));
+  console.log('');
+  closeRl();
+}
+
+main().catch(e => fail('Непредвиденная ошибка: ' + e.message));
