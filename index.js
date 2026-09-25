@@ -89,6 +89,8 @@ function probe(host, port, timeout) {
       const c = e.code || '';
       if (c === 'ENOTFOUND' || c === 'EAI_AGAIN') return done('dns');
       if (c === 'ECONNREFUSED') return done('refused');
+      // RST означает, что машина на связи и ответила — просто рвёт соединение.
+      if (c === 'ECONNRESET' || c === 'ECONNABORTED') return done('reset');
       done('timeout');
     });
     s.connect(port, host);
@@ -205,12 +207,17 @@ async function main() {
     process.stdout.write('  ' + C.dim('проверяю доступность адреса… '));
     const r = await probe(host, port, 10000);
     if (r === 'ok') { console.log(C.ok('доступен')); break; }
+    if (r === 'reset') {
+      console.log(C.warn('отвечает, но сбрасывает соединение'));
+      console.log('  ' + C.dim('Пробую подключиться — возможно, сервер ещё разворачивается.'));
+      break;
+    }
     console.log('');
     if (r === 'dns') {
       console.log('  ' + C.warn(`Адрес ${host} не найден — похоже на опечатку.`));
     } else if (r === 'refused') {
       console.log('  ' + C.warn(`Сервер ${host} отклонил подключение по SSH.`));
-      console.log('    ' + C.dim('Адрес доступен, но порт 22 закрыт. Проверьте, запущен ли сервер.'));
+      console.log('    ' + C.dim(`Адрес доступен, но порт ${port} закрыт. Проверьте, запущен ли сервер.`));
     } else {
       console.log('  ' + C.warn(`Адрес ${host} недоступен с вашего интернета.`));
       console.log('    ' + C.dim('Сервер может быть исправен, но маршрута до него нет.'));
