@@ -1,11 +1,12 @@
 {
-  "name": "vless",
-  "version": "1.1.0",
+  "name": "vless-setup",
+  "version": "1.2.0",
   "description": "Поднимает VLESS + Reality на вашем сервере и кладёт готовый профиль Clash на рабочий стол",
-  "bin": { "vless": "index.js" },
+  "bin": { "vless-setup": "index.js" },
   "files": ["index.js", "setup.sh", "README.md"],
   "engines": { "node": ">=16" },
   "dependencies": { "ssh2": "^1.16.0" },
   "repository": { "type": "git", "url": "git+https://github.com/IBR-new/vless.git" },
+  "keywords": ["vless", "reality", "xray", "clash", "proxy"],
   "license": "MIT"
 }

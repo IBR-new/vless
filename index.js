@@ -95,6 +95,8 @@ function probe(host, port, timeout) {
   });
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 const looksLikeIp = h => /^\d{1,3}(\.\d{1,3}){3}$/.test(h) && h.split('.').every(o => +o <= 255);
 
 function buildYaml(v) {
@@ -193,12 +195,15 @@ async function main() {
   const validHost = v => (looksLikeIp(v) || /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(v))
     ? null : `«${v}» не похоже на адрес. Нужен IP вида 203.0.113.10`;
 
+  // У части хостеров SSH висит не на 22.
+  const port = parseInt(flag('port') || process.env.VLESS_PORT || '22', 10) || 22;
+
   // Адрес спрашиваем, пока не получим тот, до которого реально есть маршрут.
   let host;
   for (;;) {
     host = await askRequired('IP сервера', null, flag('host') || process.env.VLESS_HOST, validHost);
     process.stdout.write('  ' + C.dim('проверяю доступность адреса… '));
-    const r = await probe(host, 22, 10000);
+    const r = await probe(host, port, 10000);
     if (r === 'ok') { console.log(C.ok('доступен')); break; }
     console.log('');
     if (r === 'dns') {
@@ -225,27 +230,51 @@ async function main() {
     pass = await askRequired('Пароль', null, attempt === 1 ? (flag('pass') || process.env.VLESS_PASS) : null);
     console.log('');
 
-    let res;
-    try {
-      res = await runSetup(host, user, pass, script);
-    } catch (e) {
-      if (e.kind === 'auth') {
-        console.log('  ' + C.warn('Сервер отклонил логин или пароль.'));
-        console.log('    ' + C.dim('Сверьтесь с письмом хостера: пароль вводится без пробелов по краям.'));
-        if (flag('pass') || process.env.VLESS_PASS) fail('Неверные учётные данные.');
-        console.log('  ' + C.dim('Попробуйте ещё раз или нажмите Ctrl+C.'));
-        console.log('');
-        continue;
+    // Обрыв соединения обычно временный: сервер ещё разворачивается либо
+    // сработала защита от перебора. Пробуем несколько раз с паузой.
+    let res = null, authFailed = false;
+    for (let t = 1; t <= 3; t++) {
+      try {
+        res = await runSetup(host, port, user, pass, script);
+        break;
+      } catch (e) {
+        if (e.kind === 'auth') { authFailed = true; break; }
+
+        if (e.kind === 'reset' || e.kind === 'timeout') {
+          if (t < 3) {
+            console.log('  ' + C.warn('Сервер разорвал соединение.') +
+              C.dim(` Повторю через 10 секунд — попытка ${t + 1} из 3.`));
+            await sleep(10000);
+            continue;
+          }
+          fail('Сервер трижды разорвал соединение.',
+            'Обычно причина одна из трёх:\n' +
+            '· сервер ещё разворачивается — подождите 5 минут после письма хостера;\n' +
+            '· сработала защита от перебора паролей — подождите 15 минут;\n' +
+            '· SSH закрыт firewall — проверьте панель управления у хостера.\n' +
+            'Проверить вручную: ssh ' + user + '@' + host + (port !== 22 ? ' -p ' + port : ''));
+        }
+        fail('Не удалось подключиться: ' + e.message);
       }
-      fail('Не удалось подключиться: ' + e.message);
     }
+
+    if (authFailed) {
+      console.log('  ' + C.warn('Сервер отклонил логин или пароль.'));
+      console.log('    ' + C.dim('Сверьтесь с письмом хостера: пароль вводится без пробелов по краям.'));
+      if (flag('pass') || process.env.VLESS_PASS) fail('Неверные учётные данные.');
+      console.log('  ' + C.dim('Попробуйте ещё раз или нажмите Ctrl+C.'));
+      console.log('');
+      await sleep(1500);   // не упираемся в ограничение sshd на частые попытки
+      continue;
+    }
+
     finish(res.code, res.raw, host);
     return;
   }
 }
 
 // Одно SSH-подключение: ставит и запускает серверную часть.
-function runSetup(host, user, pass, script) {
+function runSetup(host, port, user, pass, script) {
   return new Promise((resolve, reject) => {
     const conn = new Client();
     let raw = '', settled = false;
@@ -267,10 +296,13 @@ function runSetup(host, user, pass, script) {
         stream.end(script);
       });
     }).on('error', e => {
+      const sig = (e.code || '') + ' ' + (e.message || '');
       const kind = e.level === 'client-authentication' ? 'auth'
-        : e.level === 'client-timeout' ? 'timeout' : 'other';
+        : e.level === 'client-timeout' ? 'timeout'
+        : /ECONNRESET|ECONNABORTED|EPIPE|ETIMEDOUT/.test(sig) ? 'reset'
+        : 'other';
       done(() => reject(Object.assign(new Error(e.message), { kind })));
-    }).connect({ host, port: 22, username: user, password: pass, readyTimeout: 25000 });
+    }).connect({ host, port, username: user, password: pass, readyTimeout: 25000 });
   });
 }
 
