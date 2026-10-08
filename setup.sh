@@ -5,9 +5,25 @@ set -eu
 log(){ echo "[$(date +%H:%M:%S)] $*"; }
 
 log "1/6 установка Xray"
-if ! command -v xray >/dev/null 2>&1; then
-  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
+# Без DNS не скачать Xray, а прокси не откроет ни одного сайта. На свежих VPS
+# резолвер хостера бывает мёртвым — тогда прописываем публичный.
+# Строка ERROR=… — сигнал для index.js, какой совет показать.
+resolves(){ timeout 15 getent hosts github.com >/dev/null 2>&1; }
+online(){ for ip in 1.1.1.1 8.8.8.8; do timeout 5 bash -c "</dev/tcp/$ip/443" 2>/dev/null && return 0; done; return 1; }
+if ! resolves; then
+  online || { echo "ERROR=offline"; exit 2; }
+  cp -P /etc/resolv.conf /etc/resolv.conf.bak-vless 2>/dev/null || true
+  [ -L /etc/resolv.conf ] && rm -f /etc/resolv.conf
+  printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+  resolves || { echo "ERROR=dns"; exit 2; }
+  log "    DNS не работал — прописал 1.1.1.1 и 8.8.8.8"
 fi
+if ! command -v xray >/dev/null 2>&1; then
+  INSTALLER=$(curl -fsSL --retry 3 https://github.com/XTLS/Xray-install/raw/main/install-release.sh) \
+    || { echo "ERROR=download"; exit 2; }
+  bash -c "$INSTALLER" @ install >/tmp/xray-install.log 2>&1 || true
+fi
+command -v xray >/dev/null 2>&1 || { tail -5 /tmp/xray-install.log 2>/dev/null; echo "ERROR=install"; exit 2; }
 xray version 2>/dev/null | head -1 || true
 
 log "2/6 генерация ключей"

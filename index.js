@@ -313,14 +313,32 @@ function runSetup(host, port, user, pass, script) {
   });
 }
 
+const SERVER_ERRORS = {
+  offline: ['У сервера нет выхода в интернет.',
+    'Скрипт подключился к серверу, но сам сервер не может открыть ни один сайт.\n' +
+    '· если сервер создан только что — подождите 10–15 минут и запустите команду ещё раз;\n' +
+    '· если не поможет — напишите хостеру: «на VPS не работает исходящий интернет».'],
+  dns: ['На сервере не работает DNS.',
+    'Интернет на сервере есть, но адреса сайтов не определяются — даже через 1.1.1.1 и 8.8.8.8.\n' +
+    'Похоже, хостер закрывает DNS-запросы наружу. Напишите в поддержку: «на VPS не работает DNS».'],
+  download: ['Сервер не смог скачать Xray с GitHub.',
+    'Интернет на сервере есть, но github.com не открывается.\n' +
+    'Обычно это временный сбой — запустите команду ещё раз через пару минут.\n' +
+    'Если повторяется — проверьте на сервере: curl -I https://github.com — и напишите хостеру.']
+};
+
 function finish(code, raw, host) {
   const get = k => { const m = raw.match(new RegExp('^' + k + '=(.+)$', 'm')); return m ? m[1].trim() : null; };
   const v = { host, uuid: get('UUID'), pub: get('PUBLIC_KEY'), sid: get('SHORT_ID'), dest: get('DEST') };
 
+  // Сбои сети сервера setup.sh помечает строкой ERROR=…: на них нужен совет, а не лог.
+  const err = get('ERROR');
+  if (SERVER_ERRORS[err]) fail(...SERVER_ERRORS[err]);
+
   if (code !== 0 || !v.uuid || !v.pub || !v.sid || !v.dest) {
-    fail('Установка не завершилась.',
+    fail(err === 'install' ? 'Xray не установился.' : 'Установка не завершилась.',
       'Сервер вернул код ' + code + '. Последние строки вывода:\n' +
-      raw.trim().split('\n').slice(-6).join('\n'));
+      raw.trim().split('\n').filter(l => !/^ERROR=/.test(l)).slice(-6).join('\n'));
   }
 
   const file = path.join(desktopDir(), 'vless.yaml');
