@@ -4,6 +4,15 @@ set -eu
 
 log(){ echo "[$(date +%H:%M:%S)] $*"; }
 
+# Скрипт ставится на чистый сервер. Если порт уже держит другая программа
+# (веб-сервер, VPN-панель), Xray молча не запустится — проверяем до любых правок.
+# Свой xray от прошлого прогона не мешает. Если владельца порта не видно
+# (урезанный root в контейнерных VPS), не гадаем — сбой поймает проверка запуска.
+for p in 443 8443; do
+  who=$(ss -Htlnp "sport = :$p" 2>/dev/null | grep -oP 'users:\(\("\K[^"]+' | grep -vx xray | head -1 || true)
+  if [ -n "$who" ]; then echo "PORT=$p"; echo "BUSY_BY=$who"; echo "ERROR=port"; exit 2; fi
+done
+
 log "1/6 установка Xray"
 # Без DNS не скачать Xray, а прокси не откроет ни одного сайта. На свежих VPS
 # резолвер хостера бывает мёртвым — тогда прописываем публичный.
@@ -83,6 +92,9 @@ cat > /etc/logrotate.d/xray <<'EOF'
 /var/log/xray/*.log { daily rotate 3 compress missingok notifempty copytruncate }
 EOF
 systemctl restart xray; sleep 3
+# restart отвечает успехом, даже если Xray тут же упал, — спрашиваем отдельно.
+systemctl is-active --quiet xray || {
+  journalctl -u xray -n 20 --no-pager -o cat 2>/dev/null | grep -v '^$' | tail -3; echo "ERROR=service"; exit 2; }
 
 log "6/6 самопроверка — реальный хэндшейк через loopback"
 cat > /root/.verify.json <<EOF
@@ -95,7 +107,12 @@ cat > /root/.verify.json <<EOF
 EOF
 setsid nohup xray run -config /root/.verify.json >/dev/null 2>&1 </dev/null &
 sleep 4
-OUT=$(curl -s --max-time 20 --socks5-hostname 127.0.0.1:10809 https://api.ipify.org || true)
+# Второй адрес — на случай, если первый сервис недоступен из страны сервера.
+OUT=""
+for u in https://api.ipify.org https://icanhazip.com; do
+  OUT=$(curl -s --max-time 20 --socks5-hostname 127.0.0.1:10809 "$u" | tr -d '[:space:]' || true)
+  [ -n "$OUT" ] && break
+done
 for p in $(ss -tlnp 2>/dev/null | grep 10809 | grep -oP 'pid=\K[0-9]+'); do kill $p 2>/dev/null || true; done
 rm -f /root/.verify.json
 
@@ -103,7 +120,9 @@ echo
 if [ -n "$OUT" ]; then
   echo "=== ПРОКСИ РАБОТАЕТ, выходной IP: $OUT ==="
 else
-  echo "=== САМОПРОВЕРКА НЕ ПРОШЛА — конфиг оставлен для разбора ==="; exit 1
+  echo "=== САМОПРОВЕРКА НЕ ПРОШЛА — конфиг оставлен для разбора ==="
+  tail -3 /var/log/xray/error.log 2>/dev/null || true
+  echo "ERROR=selfcheck"; exit 1
 fi
 echo "UUID=$UUID"
 echo "PUBLIC_KEY=$PUB"

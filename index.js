@@ -324,7 +324,19 @@ const SERVER_ERRORS = {
   download: ['Сервер не смог скачать Xray с GitHub.',
     'Интернет на сервере есть, но github.com не открывается.\n' +
     'Обычно это временный сбой — запустите команду ещё раз через пару минут.\n' +
-    'Если повторяется — проверьте на сервере: curl -I https://github.com — и напишите хостеру.']
+    'Если повторяется — проверьте на сервере: curl -I https://github.com — и напишите хостеру.'],
+  port: get => [`Порт ${get('PORT')} на сервере уже занят: ${get('BUSY_BY')}.`,
+    'Скрипт ставится на чистый сервер, а здесь уже работает другая программа —\n' +
+    'обычно веб-сервер или VPN-панель, поставленная раньше. Xray с ней не уживётся.\n' +
+    'Проще всего переустановить ОС (Ubuntu 22.04) в панели хостера и запустить команду ещё раз.\n' +
+    'На сервере при этом ничего не изменено.']
+};
+
+// Здесь совета нет — нужны последние строки вывода, по ним видна причина.
+const SERVER_FAILURES = {
+  install: 'Xray не установился.',
+  service: 'Xray установился, но не запускается.',
+  selfcheck: 'Xray запущен, но самопроверка не прошла.'
 };
 
 function finish(code, raw, host) {
@@ -333,10 +345,11 @@ function finish(code, raw, host) {
 
   // Сбои сети сервера setup.sh помечает строкой ERROR=…: на них нужен совет, а не лог.
   const err = get('ERROR');
-  if (SERVER_ERRORS[err]) fail(...SERVER_ERRORS[err]);
+  const known = SERVER_ERRORS[err];
+  if (known) fail(...(typeof known === 'function' ? known(get) : known));
 
   if (code !== 0 || !v.uuid || !v.pub || !v.sid || !v.dest) {
-    fail(err === 'install' ? 'Xray не установился.' : 'Установка не завершилась.',
+    fail(SERVER_FAILURES[err] || 'Установка не завершилась.',
       'Сервер вернул код ' + code + '. Последние строки вывода:\n' +
       raw.trim().split('\n').filter(l => !/^ERROR=/.test(l)).slice(-6).join('\n'));
   }
