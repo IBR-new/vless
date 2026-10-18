@@ -27,10 +27,14 @@ if ! resolves; then
   resolves || { echo "ERROR=dns"; exit 2; }
   log "    DNS не работал — прописал 1.1.1.1 и 8.8.8.8"
 fi
+# Установщик берём с проверенного коммита, а не с main: 17–18.10.2026 там
+# включили set -euo pipefail, и он стал падать на tput без $TERM (SSH без терминала).
+# Сам Xray он всё равно ставит последней версии. TERM — на случай смены коммита.
+INSTALLER_URL=https://raw.githubusercontent.com/XTLS/Xray-install/e741a4f56d368afbb9e5be3361b40c4552d3710d/install-release.sh
 if ! command -v xray >/dev/null 2>&1; then
-  INSTALLER=$(curl -fsSL --retry 3 https://github.com/XTLS/Xray-install/raw/main/install-release.sh) \
+  INSTALLER=$(curl -fsSL --retry 3 "$INSTALLER_URL") \
     || { echo "ERROR=download"; exit 2; }
-  bash -c "$INSTALLER" @ install >/tmp/xray-install.log 2>&1 || true
+  TERM=xterm bash -c "$INSTALLER" @ install >/tmp/xray-install.log 2>&1 || true
 fi
 command -v xray >/dev/null 2>&1 || { tail -5 /tmp/xray-install.log 2>/dev/null; echo "ERROR=install"; exit 2; }
 xray version 2>/dev/null | head -1 || true
