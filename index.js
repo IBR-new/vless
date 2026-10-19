@@ -7,7 +7,9 @@ const net = require('net');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const https = require('https');
 const { execSync } = require('child_process');
+const VERSION = require('./package.json').version;
 
 const C = {
   dim: s => `\x1b[2m${s}\x1b[0m`,
@@ -98,6 +100,48 @@ function probe(host, port, timeout) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// --- свежесть: npx запоминает пакет при первом запуске и по той же ссылке
+// больше его не обновляет. Без сверки подписчик годами гоняет старые ошибки.
+function latestVersion() {
+  return new Promise(res => {
+    const req = https.get('https://raw.githubusercontent.com/IBR-new/vless/main/package.json',
+      { timeout: 4000 }, r => {
+        let body = '';
+        r.on('data', d => { body += d; });
+        r.on('end', () => { try { res(JSON.parse(body).version || null); } catch (e) { res(null); } });
+      });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => res(null));   // нет связи с GitHub — не повод не ставить
+  });
+}
+
+function isNewer(a, b) {
+  const x = a.split('.').map(Number), y = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return false;
+}
+
+async function ensureFresh() {
+  const latest = await latestVersion();
+  if (!latest || !isNewer(latest, VERSION)) return;
+  // Своя копия в кеше npx: …/_npx/<хэш>/node_modules/vless-setup
+  const m = __dirname.match(/^(.*[\\/]_npx[\\/][^\\/]+)[\\/]node_modules[\\/]/);
+  if (!m) {   // запуск из клона репозитория — только предупреждаем
+    console.log('  ' + C.warn(`Есть новая версия скрипта: ${latest} (у вас ${VERSION}).`) + '\n');
+    return;
+  }
+  const title = `Запущена старая версия скрипта (${VERSION}), актуальная — ${latest}.`;
+  try {
+    fs.rmSync(m[1], { recursive: true, force: true });
+  } catch (e) {
+    const dir = path.dirname(m[1]).replace(/\\/g, '/');
+    fail(title, 'npx взял её из своего кеша. Очистите кеш этой командой и запустите установку ещё раз:\n' +
+      `node -e "require('fs').rmSync('${dir}',{recursive:true,force:true})"`);
+  }
+  fail(title, 'npx взял её из своего кеша. Старую копию я удалил —\n' +
+    'запустите ту же команду ещё раз, скачается свежая.');
+}
 
 const looksLikeIp = h => /^\d{1,3}(\.\d{1,3}){3}$/.test(h) && h.split('.').every(o => +o <= 255);
 
@@ -193,6 +237,7 @@ async function main() {
   console.log('  ' + C.b('VLESS + Reality') + C.dim(' — установка прокси на ваш сервер'));
   console.log('  ' + C.dim('Данные возьмите из письма хостера. Выйти — Ctrl+C.'));
   console.log('');
+  await ensureFresh();
 
   const validHost = v => (looksLikeIp(v) || /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(v))
     ? null : `«${v}» не похоже на адрес. Нужен IP вида 203.0.113.10`;
