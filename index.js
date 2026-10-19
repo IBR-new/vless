@@ -103,16 +103,18 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // --- свежесть: npx запоминает пакет при первом запуске и по той же ссылке
 // больше его не обновляет. Без сверки подписчик годами гоняет старые ошибки.
+// Сверяемся с npm, а не с GitHub: выпуск — это публикация в npm. Иначе main,
+// ушедший вперёд npm, гонял бы npm-пользователей по кругу «удалил — скачал то же».
 function latestVersion() {
   return new Promise(res => {
-    const req = https.get('https://raw.githubusercontent.com/IBR-new/vless/main/package.json',
+    const req = https.get('https://registry.npmjs.org/vless-setup/latest',
       { timeout: 4000 }, r => {
         let body = '';
         r.on('data', d => { body += d; });
         r.on('end', () => { try { res(JSON.parse(body).version || null); } catch (e) { res(null); } });
       });
     req.on('timeout', () => req.destroy());
-    req.on('error', () => res(null));   // нет связи с GitHub — не повод не ставить
+    req.on('error', () => res(null));   // нет связи с npm — не повод не ставить
   });
 }
 
