@@ -95,6 +95,16 @@ sysctl -p >/dev/null 2>&1 || true
 cat > /etc/logrotate.d/xray <<'EOF'
 /var/log/xray/*.log { daily rotate 3 compress missingok notifempty copytruncate }
 EOF
+# Логи должны принадлежать пользователю службы (обычно nobody). Установщик
+# создаёт их так только при первой установке; если файлов не было, их создал
+# от root наш же `xray run -test` на шаге 4 — и служба падает
+# с «access.log: permission denied». Права — как ставит сам установщик.
+SVC_USER=$(systemctl show -p User --value xray 2>/dev/null || true)
+mkdir -p /var/log/xray && chown 0:0 /var/log/xray && chmod 755 /var/log/xray
+touch /var/log/xray/access.log /var/log/xray/error.log
+if [ -n "$SVC_USER" ] && id "$SVC_USER" >/dev/null 2>&1; then
+  chown "$SVC_USER": /var/log/xray/*.log && chmod 600 /var/log/xray/*.log
+fi
 systemctl restart xray; sleep 3
 # restart отвечает успехом, даже если Xray тут же упал, — спрашиваем отдельно.
 systemctl is-active --quiet xray || {
