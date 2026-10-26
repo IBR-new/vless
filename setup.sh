@@ -31,12 +31,18 @@ fi
 # включили set -euo pipefail, и он стал падать на tput без $TERM (SSH без терминала).
 # Сам Xray он всё равно ставит последней версии. TERM — на случай смены коммита.
 INSTALLER_URL=https://raw.githubusercontent.com/XTLS/Xray-install/e741a4f56d368afbb9e5be3361b40c4552d3710d/install-release.sh
-if ! command -v xray >/dev/null 2>&1; then
+# Версию Xray тоже фиксируем. С 26.10.21 сервер REALITY отвергает Client Hello
+# без X25519MLKEM768 (xtls/reality 8cdf7bf): короткий отпечаток edge не проходит,
+# а Clash Verge (mihomo 1.19.33) не подключается даже с chrome. 26.3.27 принимает
+# оба — проверено 26.10.2026. Стоит другая версия — ставим поверх эту.
+XRAY_VERSION=26.3.27
+has_xray(){ xray version 2>/dev/null | grep -q "^Xray $XRAY_VERSION "; }
+if ! has_xray; then
   INSTALLER=$(curl -fsSL --retry 3 "$INSTALLER_URL") \
     || { echo "ERROR=download"; exit 2; }
-  TERM=xterm bash -c "$INSTALLER" @ install >/tmp/xray-install.log 2>&1 || true
+  TERM=xterm bash -c "$INSTALLER" @ install --version "v$XRAY_VERSION" >/tmp/xray-install.log 2>&1 || true
 fi
-command -v xray >/dev/null 2>&1 || { tail -5 /tmp/xray-install.log 2>/dev/null; echo "ERROR=install"; exit 2; }
+has_xray || { tail -5 /tmp/xray-install.log 2>/dev/null; echo "ERROR=install"; exit 2; }
 xray version 2>/dev/null | head -1 || true
 
 log "2/6 генерация ключей"
@@ -117,7 +123,7 @@ cat > /root/.verify.json <<EOF
  "outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"127.0.0.1","port":443,
    "users":[{"id":"$UUID","encryption":"none","flow":"xtls-rprx-vision"}]}]},
    "streamSettings":{"network":"tcp","security":"reality","realitySettings":{
-     "serverName":"$DEST","fingerprint":"chrome","publicKey":"$PUB","shortId":"$SID"}}}]}
+     "serverName":"$DEST","fingerprint":"edge","publicKey":"$PUB","shortId":"$SID"}}}]}
 EOF
 setsid nohup xray run -config /root/.verify.json >/dev/null 2>&1 </dev/null &
 sleep 4

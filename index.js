@@ -179,6 +179,8 @@ dns:
     - https://1.1.1.1/dns-query
 
 proxies:
+  # edge: ClientHello ~0,5 КБ — один пакет. У chrome ~1,8 КБ (постквантовый ключ),
+  # два пакета, и часть провайдеров (Уфанет) пропускает только первый.
   - name: VLESS-443
     type: vless
     server: ${v.host}
@@ -189,7 +191,7 @@ proxies:
     udp: true
     flow: xtls-rprx-vision
     servername: ${v.dest}
-    client-fingerprint: chrome
+    client-fingerprint: edge
     reality-opts:
       public-key: ${v.pub}
       short-id: ${v.sid}
@@ -204,7 +206,7 @@ proxies:
     udp: true
     flow: xtls-rprx-vision
     servername: ${v.dest}
-    client-fingerprint: chrome
+    client-fingerprint: edge
     reality-opts:
       public-key: ${v.pub}
       short-id: ${v.sid}
