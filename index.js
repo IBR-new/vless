@@ -324,7 +324,7 @@ async function main() {
       continue;
     }
 
-    finish(res.code, res.raw, host);
+    await finish(res.code, res.raw, host);
     return;
   }
 }
@@ -388,7 +388,7 @@ const SERVER_FAILURES = {
   selfcheck: 'Xray запущен, но самопроверка не прошла.'
 };
 
-function finish(code, raw, host) {
+async function finish(code, raw, host) {
   const get = k => { const m = raw.match(new RegExp('^' + k + '=(.+)$', 'm')); return m ? m[1].trim() : null; };
   const v = { host, uuid: get('UUID'), pub: get('PUBLIC_KEY'), sid: get('SHORT_ID'), dest: get('DEST') };
 
@@ -410,6 +410,19 @@ function finish(code, raw, host) {
   console.log('  ' + C.ok(C.b('Готово.')));
   console.log('  ' + 'Профиль сохранён: ' + C.acc(file));
   console.log('');
+
+  // Самопроверка идёт на самом сервере и не видит firewall хостера.
+  // Стучимся в оба порта отсюда — так же, как будет стучаться Clash.
+  const closed = [];
+  for (const p of [443, 8443]) if (await probe(host, p, 8000) !== 'ok') closed.push(p);
+  if (closed.length) {
+    console.log('  ' + C.warn(closed.length === 2
+      ? 'Оба порта, 443 и 8443, с вашего интернета недоступны.'
+      : `Порт ${closed[0]} с вашего интернета недоступен — этот узел работать не будет.`));
+    console.log('    ' + C.dim('Xray на сервере запущен, значит порт закрыт снаружи: firewall в панели хостера'));
+    console.log('    ' + C.dim('или фильтр провайдера. Откройте порт в панели — профиль менять не нужно.'));
+    console.log('');
+  }
   console.log('  ' + C.dim('Осталось два шага:'));
   console.log('  ' + C.dim('  1. Перетащите этот файл в Clash Verge — вкладка «Профили».'));
   console.log('  ' + C.dim('  2. Включите «Режим TUN», системный прокси при этом выключите.'));

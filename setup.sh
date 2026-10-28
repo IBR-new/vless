@@ -38,6 +38,14 @@ INSTALLER_URL=https://raw.githubusercontent.com/XTLS/Xray-install/e741a4f56d368a
 XRAY_VERSION=26.3.27
 has_xray(){ xray version 2>/dev/null | grep -q "^Xray $XRAY_VERSION "; }
 if ! has_xray; then
+  # Установщик ставит unzip через apt без apt update. На свежих образах списки
+  # пакетов пустые, и он падает с «Installation of unzip failed». Ставим сами;
+  # таймаут блокировки — на случай, если apt уже занят автообновлением.
+  if ! type -P unzip >/dev/null && type -P apt-get >/dev/null; then
+    { apt-get -o DPkg::Lock::Timeout=180 update \
+      && DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 -y --no-install-recommends install unzip
+    } >/tmp/unzip-install.log 2>&1 || true
+  fi
   INSTALLER=$(curl -fsSL --retry 3 "$INSTALLER_URL") \
     || { echo "ERROR=download"; exit 2; }
   TERM=xterm bash -c "$INSTALLER" @ install --version "v$XRAY_VERSION" >/tmp/xray-install.log 2>&1 || true
@@ -101,6 +109,15 @@ sysctl -p >/dev/null 2>&1 || true
 cat > /etc/logrotate.d/xray <<'EOF'
 /var/log/xray/*.log { daily rotate 3 compress missingok notifempty copytruncate }
 EOF
+# Часть хостеров отдаёт образ с включённым ufw, где открыты только 22, 80 и 443:
+# 8443 снаружи молчит, а самопроверка через loopback этого не видит.
+if ufw status 2>/dev/null | grep -q '^Status: active'; then
+  ufw allow 443/tcp >/dev/null && ufw allow 8443/tcp >/dev/null && log "    ufw: открыл 443 и 8443"
+fi
+if systemctl is-active --quiet firewalld 2>/dev/null; then
+  firewall-cmd -q --permanent --add-port=443/tcp --add-port=8443/tcp && firewall-cmd -q --reload \
+    && log "    firewalld: открыл 443 и 8443"
+fi
 # Логи должны принадлежать пользователю службы (обычно nobody). Установщик
 # создаёт их так только при первой установке; если файлов не было, их создал
 # от root наш же `xray run -test` на шаге 4 — и служба падает
