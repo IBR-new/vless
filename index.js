@@ -2,11 +2,13 @@
 'use strict';
 
 const { Client } = require('ssh2');
+const qrcode = require('qrcode-generator');
 const readline = require('readline');
 const net = require('net');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const zlib = require('zlib');
 const https = require('https');
 const { execSync } = require('child_process');
 const VERSION = require('./package.json').version;
@@ -236,6 +238,45 @@ rules:
 `;
 }
 
+// --- Happ (телефон): ссылки vless:// и QR-коды к ним ---
+// Те же параметры, что у узлов Clash, включая отпечаток edge.
+const happLink = (v, port) =>
+  `vless://${v.uuid}@${v.host}:${port}?encryption=none&flow=xtls-rprx-vision` +
+  `&security=reality&sni=${v.dest}&fp=edge&pbk=${v.pub}&sid=${v.sid}&type=tcp#VLESS-${port}`;
+
+// PNG собираем сами: zlib встроен в Node, а от библиотеки нужна только матрица QR.
+const CRC = Array.from({ length: 256 }, (_, n) => {
+  for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1;
+  return n >>> 0;
+});
+const crc32 = b => { let c = ~0; for (const x of b) c = CRC[(c ^ x) & 255] ^ (c >>> 8); return ~c >>> 0; };
+
+function qrPng(text) {
+  const qr = qrcode(0, 'M');
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount(), quiet = 4, px = 8, w = (n + 2 * quiet) * px;
+  const raw = Buffer.alloc((w + 1) * w, 255);              // белый фон
+  for (let y = 0; y < w; y++) {
+    raw[y * (w + 1)] = 0;                                  // фильтр строки: нет
+    const r = Math.floor(y / px) - quiet;
+    for (let x = 0; x < w; x++) {
+      const c = Math.floor(x / px) - quiet;
+      if (r >= 0 && r < n && c >= 0 && c < n && qr.isDark(r, c)) raw[y * (w + 1) + 1 + x] = 0;
+    }
+  }
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(w, 4); ihdr[8] = 8;   // 8 бит, оттенки серого
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
 async function main() {
   console.log('');
   console.log('  ' + C.b('VLESS + Reality') + C.dim(' — установка прокси на ваш сервер'));
@@ -403,12 +444,17 @@ async function finish(code, raw, host) {
       raw.trim().split('\n').filter(l => !/^ERROR=/.test(l)).slice(-6).join('\n'));
   }
 
-  const file = path.join(desktopDir(), 'vless.yaml');
+  const dir = desktopDir();
+  const file = path.join(dir, 'vless.yaml');
   fs.writeFileSync(file, buildYaml(v), 'utf8');
+  // Для Happ — QR на каждый порт и те же ссылки текстом, для импорта из буфера.
+  fs.writeFileSync(path.join(dir, 'vless-happ.txt'), [443, 8443].map(p => happLink(v, p)).join('\n') + '\n', 'utf8');
+  for (const p of [443, 8443]) fs.writeFileSync(path.join(dir, `vless-happ-${p}.png`), qrPng(happLink(v, p)));
 
   console.log('');
   console.log('  ' + C.ok(C.b('Готово.')));
-  console.log('  ' + 'Профиль сохранён: ' + C.acc(file));
+  console.log('  ' + 'Профиль для Clash: ' + C.acc(file));
+  console.log('  ' + 'QR-коды для Happ:  ' + C.acc('vless-happ-443.png') + ' и ' + C.acc('vless-happ-8443.png') + C.dim(' — там же'));
   console.log('');
 
   // Самопроверка идёт на самом сервере и не видит firewall хостера.
@@ -423,9 +469,11 @@ async function finish(code, raw, host) {
     console.log('    ' + C.dim('или фильтр провайдера. Откройте порт в панели — профиль менять не нужно.'));
     console.log('');
   }
-  console.log('  ' + C.dim('Осталось два шага:'));
-  console.log('  ' + C.dim('  1. Перетащите этот файл в Clash Verge — вкладка «Профили».'));
+  console.log('  ' + C.dim('Clash Verge на компьютере:'));
+  console.log('  ' + C.dim('  1. Перетащите vless.yaml во вкладку «Профили».'));
   console.log('  ' + C.dim('  2. Включите «Режим TUN», системный прокси при этом выключите.'));
+  console.log('  ' + C.dim('Happ на телефоне:'));
+  console.log('  ' + C.dim('  откройте на компьютере оба QR-кода и отсканируйте их в Happ через «+».'));
   console.log('');
   closeRl();
 }
