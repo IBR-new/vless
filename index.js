@@ -358,6 +358,11 @@ async function main() {
     if (authFailed) {
       console.log('  ' + C.warn('Сервер отклонил логин или пароль.'));
       console.log('    ' + C.dim('Сверьтесь с письмом хостера: пароль вводится без пробелов по краям.'));
+      // Хостеры выдают пароли латиницей: другое — раскладка или мусор из письма.
+      if (/[^\x21-\x7e]/.test(pass)) {
+        console.log('    ' + C.warn('В пароле есть символы не из латиницы — проверьте раскладку клавиатуры.'));
+        console.log('    ' + C.dim('При копировании из письма мог попасть невидимый символ — наберите пароль вручную.'));
+      }
       if (flag('pass') || process.env.VLESS_PASS) fail('Неверные учётные данные.');
       console.log('  ' + C.dim('Попробуйте ещё раз или нажмите Ctrl+C.'));
       console.log('');
@@ -399,7 +404,12 @@ function runSetup(host, port, user, pass, script) {
         : /ECONNRESET|ECONNABORTED|EPIPE|ETIMEDOUT/.test(sig) ? 'reset'
         : 'other';
       done(() => reject(Object.assign(new Error(e.message), { kind })));
-    }).connect({ host, port, username: user, password: pass, readyTimeout: 25000 });
+    })
+    // Часть серверов принимает пароль только способом keyboard-interactive
+    // (PasswordAuthentication no при включённом PAM). PuTTY и ssh так и входят,
+    // а без этого способа верный пароль выглядит как «отклонён».
+    .on('keyboard-interactive', (name, instr, lang, prompts, reply) => reply(prompts.map(() => pass)))
+    .connect({ host, port, username: user, password: pass, tryKeyboard: true, readyTimeout: 25000 });
   });
 }
 

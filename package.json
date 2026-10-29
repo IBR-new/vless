@@ -1,6 +1,6 @@
 {
   "name": "vless-setup",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Поднимает VLESS + Reality на вашем сервере и кладёт на рабочий стол профиль Clash и QR-коды для Happ",
   "bin": { "vless-setup": "index.js" },
   "files": ["index.js", "setup.sh", "README.md"],
